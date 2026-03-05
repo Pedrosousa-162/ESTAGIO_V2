@@ -1,260 +1,446 @@
 import { createClient } from "@/lib/supabase/server";
-import { FileSignature, ArrowRightLeft, Link2, Filter, TrendingDown, Calendar, Building2, Factory } from "lucide-react";
+import Link from "next/link";
+import { FileText } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
-function PhaseCard({
-  phase,
-  title,
-  status,
-  children,
+const PAGE_SIZE = 20;
+
+const STATUS_BADGE: Record<string, string> = {
+  active: "bg-green-100 text-green-700",
+  closed: "bg-gray-100 text-gray-600",
+  modified: "bg-amber-100 text-amber-700",
+};
+
+const STATUS_LABEL: Record<string, string> = {
+  active: "Activo",
+  closed: "Fechado",
+  modified: "Modificado",
+};
+
+function formatEur(val: number | null): string {
+  if (val == null) return "\u2014";
+  if (val >= 1_000_000) {
+    return `${(val / 1_000_000).toLocaleString("pt-PT", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}M \u20AC`;
+  }
+  if (val >= 1_000) {
+    return `${(val / 1_000).toLocaleString("pt-PT", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}k \u20AC`;
+  }
+  return val.toLocaleString("pt-PT", { minimumFractionDigits: 0, maximumFractionDigits: 0 }) + " \u20AC";
+}
+
+function formatDate(d: string | null): string {
+  if (!d) return "\u2014";
+  const parts = d.split("-");
+  if (parts.length !== 3) return d;
+  return `${parts[2]}/${parts[1]}/${parts[0]}`;
+}
+
+function discountBadge(base: number | null, contract: number | null) {
+  if (base == null || contract == null || base === 0) return null;
+  const pct = ((base - contract) / base) * 100;
+  if (Math.abs(pct) < 0.5) return null;
+  const isDiscount = pct > 0;
+  return (
+    <span
+      className={`inline-block text-xs px-1.5 py-0.5 rounded font-medium ${
+        isDiscount ? "bg-green-50 text-green-700" : "bg-red-50 text-red-700"
+      }`}
+    >
+      {isDiscount ? "-" : "+"}{Math.abs(pct).toFixed(0)}%
+    </span>
+  );
+}
+
+/** Extract first name from "NIF - Nome" format */
+function extractName(raw: string): string {
+  const idx = raw.indexOf(" - ");
+  return idx === -1 ? raw : raw.slice(idx + 3);
+}
+
+export default async function ContractsPage({
+  searchParams,
 }: {
-  phase: number;
-  title: string;
-  status: "planned" | "in_progress" | "done";
-  children: React.ReactNode;
+  searchParams: Promise<{
+    page?: string;
+    cpv?: string;
+    entity?: string;
+    entity_nif?: string;
+    winner?: string;
+    winner_nif?: string;
+    procedure?: string;
+    min_value?: string;
+    max_value?: string;
+    from_date?: string;
+    to_date?: string;
+    sort?: string;
+  }>;
 }) {
-  const statusStyles = {
-    planned: "bg-surface-50 border-surface-200 text-gray-400",
-    in_progress: "bg-amber-50/60 border-amber-200/60 text-amber-700",
-    done: "bg-brand-50/60 border-brand-200/60 text-brand-700",
-  };
-  const statusLabels = {
-    planned: "Planeado",
-    in_progress: "Em progresso",
-    done: "Concluído",
-  };
+  const params = await searchParams;
+  const page = Math.max(1, parseInt(params.page ?? "1"));
+  const cpvFilter = params.cpv ?? "";
+  const entityFilter = params.entity ?? "";
+  const entityNifFilter = params.entity_nif ?? "";
+  const winnerFilter = params.winner ?? "";
+  const winnerNifFilter = params.winner_nif ?? "";
+  const procedureFilter = params.procedure ?? "";
+  const minValue = params.min_value ?? "";
+  const maxValue = params.max_value ?? "";
+  const fromDate = params.from_date ?? "";
+  const toDate = params.to_date ?? "";
+  const sortField = params.sort ?? "signing_date";
 
-  return (
-    <div className="bg-white border border-surface-200 rounded-xl p-6 shadow-card">
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-3">
-          <span className="flex items-center justify-center w-8 h-8 rounded-lg bg-brand-50 text-brand-700 text-sm font-bold">
-            {phase}
-          </span>
-          <h3 className="font-semibold text-gray-900">{title}</h3>
-        </div>
-        <span className={`text-xs font-medium px-2.5 py-1 rounded-full border ${statusStyles[status]}`}>
-          {statusLabels[status]}
-        </span>
-      </div>
-      <div className="text-sm text-gray-500 space-y-3">{children}</div>
-    </div>
-  );
-}
-
-function FeatureItem({ icon: Icon, title, description }: { icon: React.ElementType; title: string; description: string }) {
-  return (
-    <div className="flex gap-3">
-      <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-surface-50 shrink-0 mt-0.5">
-        <Icon className="w-4 h-4 text-gray-400" />
-      </div>
-      <div>
-        <p className="text-sm font-medium text-gray-700">{title}</p>
-        <p className="text-xs text-gray-400 mt-0.5">{description}</p>
-      </div>
-    </div>
-  );
-}
-
-export default async function ContractsPage() {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
   const { data: appUser } = await supabase
     .from("app_users")
-    .select("tenant_id, role")
-    .eq("id", user!.id)
+    .select("tenant_id")
     .maybeSingle();
 
-  const tenantId = appUser?.tenant_id;
+  const from = (page - 1) * PAGE_SIZE;
 
-  // Contar contratos existentes (se a tabela já tiver dados)
-  let totalContracts = 0;
-  if (tenantId) {
-    const { count } = await supabase
-      .from("contracts")
-      .select("*", { count: "exact", head: true })
-      .eq("tenant_id", tenantId);
-    totalContracts = count ?? 0;
+  // Use search_contracts RPC for JSONB-aware filtering
+  const hasNifFilter = entityNifFilter || winnerNifFilter;
+  const hasAnyFilter = cpvFilter || entityFilter || entityNifFilter || winnerFilter || winnerNifFilter || procedureFilter || minValue || maxValue || fromDate || toDate;
+
+  // Combine entity text filter with NIF: if user typed entity name, search in JSONB text;
+  // if coming from entity detail page, use NIF.
+  // The RPC handles both entity_nif and winner_nif via text cast.
+  const effectiveEntityNif = entityNifFilter || (entityFilter ? entityFilter : null);
+  const effectiveWinnerNif = winnerNifFilter || (winnerFilter ? winnerFilter : null);
+
+  interface ContractRow {
+    id: string;
+    object: string | null;
+    procedure_type: string | null;
+    publication_date: string | null;
+    signing_date: string | null;
+    cpv_main: string | null;
+    contract_price: number | null;
+    base_price: number | null;
+    effective_price: number | null;
+    currency: string;
+    status: string;
+    contracting_entities: string[];
+    winners: string[];
   }
 
+  let contracts: ContractRow[] = [];
+  let totalCount = 0;
+
+  const { data: rpcResult } = await supabase.rpc("search_contracts", {
+    p_tenant_id: appUser?.tenant_id ?? "00000000-0000-0000-0000-000000000000",
+    p_entity_nif: effectiveEntityNif,
+    p_winner_nif: effectiveWinnerNif,
+    p_cpv: cpvFilter || null,
+    p_procedure: procedureFilter || null,
+    p_min_value: minValue ? parseFloat(minValue) : null,
+    p_max_value: maxValue ? parseFloat(maxValue) : null,
+    p_from_date: fromDate || null,
+    p_to_date: toDate || null,
+    p_sort: sortField,
+    p_offset: from,
+    p_limit: PAGE_SIZE,
+  });
+
+  if (rpcResult && Array.isArray(rpcResult) && rpcResult.length > 0) {
+    const result = rpcResult[0] as { rows: ContractRow[]; total_count: number };
+    contracts = Array.isArray(result.rows) ? result.rows : [];
+    totalCount = result.total_count ?? 0;
+  }
+
+  const totalPages = Math.ceil(totalCount / PAGE_SIZE);
+
+  // Build query string helper
+  function buildQs(overrides: Record<string, string | number> = {}) {
+    const base: Record<string, string> = {
+      page: String(page),
+      cpv: cpvFilter,
+      entity: entityFilter,
+      entity_nif: entityNifFilter,
+      winner: winnerFilter,
+      winner_nif: winnerNifFilter,
+      procedure: procedureFilter,
+      min_value: minValue,
+      max_value: maxValue,
+      from_date: fromDate,
+      to_date: toDate,
+      sort: sortField,
+    };
+    const merged = { ...base, ...Object.fromEntries(Object.entries(overrides).map(([k, v]) => [k, String(v)])) };
+    const parts = Object.entries(merged).filter(([, v]) => v).map(([k, v]) => `${k}=${encodeURIComponent(v)}`);
+    return `/contracts?${parts.join("&")}`;
+  }
+
+  const hasFilters = hasAnyFilter;
+
   return (
-    <div className="space-y-8">
-      {/* Header */}
+    <div className="space-y-5">
       <div>
-        <div className="flex items-center gap-3 mb-1">
-          <FileSignature className="w-6 h-6 text-brand-600" />
+        <div className="flex items-center gap-3 mb-0.5">
+          <FileText className="w-5 h-5 text-brand-600" />
           <h1 className="text-2xl font-bold text-gray-900">Contratos</h1>
         </div>
-        <p className="text-gray-400 text-sm">
-          Contratos celebrados na contratação pública portuguesa -- dados do endpoint
-          <code className="text-xs bg-surface-100 px-1.5 py-0.5 rounded mx-1">GetInfoContrato</code>
-          da API BASE
+        <p className="text-gray-500 text-sm">
+          {totalCount} contratos celebrados
         </p>
-        {totalContracts > 0 && (
-          <p className="text-sm text-brand-600 font-medium mt-2">
-            {totalContracts.toLocaleString("pt-PT")} contratos na base de dados
-          </p>
-        )}
       </div>
 
-      {/* O que esta página vai mostrar */}
-      <div className="bg-white border border-surface-200 rounded-xl p-6 shadow-card">
-        <h2 className="font-semibold text-gray-900 mb-4">O que vais encontrar aqui</h2>
-        <p className="text-sm text-gray-500 mb-5">
-          Depois de um concurso público terminar, é celebrado um contrato. Esta página mostra todos os
-          contratos publicados no portal BASE, com informação crucial que não existe nos anúncios:
-          <strong className="text-gray-700"> quem ganhou, quanto pagou, e quem concorreu</strong>.
-        </p>
-        <div className="grid gap-4 md:grid-cols-2">
-          <FeatureItem
-            icon={ArrowRightLeft}
-            title="Preço Base vs Preço Contratual"
-            description="Compara o valor estimado do concurso com o valor final adjudicado. Mostra o desconto médio praticado por sector e permite estimar preços competitivos."
+      {/* Active NIF filter banner */}
+      {(entityNifFilter || winnerNifFilter) && (
+        <div className="bg-blue-50 border border-blue-200 rounded-xl px-4 py-3 flex items-center justify-between">
+          <p className="text-sm text-blue-700">
+            {entityNifFilter && <>A filtrar por entidade NIF <span className="font-mono font-medium">{entityNifFilter}</span></>}
+            {entityNifFilter && winnerNifFilter && <> &middot; </>}
+            {winnerNifFilter && <>A filtrar por vencedor NIF <span className="font-mono font-medium">{winnerNifFilter}</span></>}
+            {" "}&mdash; {totalCount} resultado{totalCount !== 1 ? "s" : ""}
+          </p>
+          <Link href="/contracts" className="text-blue-600 hover:underline text-sm font-medium">
+            Limpar filtro
+          </Link>
+        </div>
+      )}
+
+      {/* Filters */}
+      <form className="bg-white border border-surface-200 rounded-xl p-4 shadow-card space-y-3">
+        {/* Row 1: Text search filters */}
+        <div className="flex flex-wrap gap-3">
+          <input
+            name="cpv"
+            defaultValue={cpvFilter}
+            placeholder="CPV (ex: 45000000)"
+            className="border border-surface-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500 transition-all w-44"
           />
-          <FeatureItem
-            icon={Factory}
-            title="Empresa Vencedora"
-            description="Para cada contrato, quem ganhou (adjudicatários) e quem participou (concorrentes). Liga directamente ao perfil da empresa na página Empresas."
+          <input
+            name="entity"
+            defaultValue={entityFilter}
+            placeholder="Entidade..."
+            className="border border-surface-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500 transition-all w-48"
           />
-          <FeatureItem
-            icon={Building2}
-            title="Entidade Adjudicante"
-            description="Qual a entidade pública que contratou. Permite navegar para o perfil completo da entidade e ver o seu histórico de contratação."
+          <input
+            name="winner"
+            defaultValue={winnerFilter}
+            placeholder="Empresa vencedora..."
+            className="border border-surface-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500 transition-all w-48"
           />
-          <FeatureItem
-            icon={Link2}
-            title="Ligação Anúncio → Contrato"
-            description="Cada contrato é ligado ao anúncio original (quando existe), permitindo ver o ciclo completo: publicação → concurso → adjudicação → contrato."
-          />
-          <FeatureItem
-            icon={Calendar}
-            title="Timeline Completa"
-            description="Datas de publicação, decisão de adjudicação, celebração do contrato, e fecho. Permite calcular tempos médios de adjudicação por sector."
-          />
-          <FeatureItem
-            icon={TrendingDown}
-            title="Modificações Contratuais"
-            description="Aditamentos e alterações a contratos existentes. Detecta contratos que disparam em valor ou prazo (red flags de gestão)."
-          />
-          <FeatureItem
-            icon={Filter}
-            title="Filtros Avançados"
-            description="Filtrar por CPV, entidade, empresa vencedora, intervalo de valor, tipo de procedimento, região, e intervalo de datas."
+          <input
+            name="procedure"
+            defaultValue={procedureFilter}
+            placeholder="Tipo procedimento..."
+            className="border border-surface-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500 transition-all w-48"
           />
         </div>
-      </div>
+        {/* Row 2: Date, value, sort, and actions */}
+        <div className="flex flex-wrap items-end gap-3">
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">Data de</label>
+            <input
+              name="from_date"
+              type="date"
+              defaultValue={fromDate}
+              className="border border-surface-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500 transition-all w-36"
+            />
+          </div>
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">Data até</label>
+            <input
+              name="to_date"
+              type="date"
+              defaultValue={toDate}
+              className="border border-surface-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500 transition-all w-36"
+            />
+          </div>
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">Valor min.</label>
+            <input
+              name="min_value"
+              type="number"
+              defaultValue={minValue}
+              placeholder="0"
+              className="border border-surface-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500 transition-all w-32"
+            />
+          </div>
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">Valor max.</label>
+            <input
+              name="max_value"
+              type="number"
+              defaultValue={maxValue}
+              placeholder="10000000"
+              className="border border-surface-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500 transition-all w-32"
+            />
+          </div>
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">Ordenar</label>
+            <select
+              name="sort"
+              defaultValue={sortField}
+              className="border border-surface-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500 transition-all bg-white"
+            >
+              <option value="signing_date">Mais recentes</option>
+              <option value="publication_date">Data publicação</option>
+              <option value="value_desc">Maior valor</option>
+              <option value="value_asc">Menor valor</option>
+            </select>
+          </div>
+          <button
+            type="submit"
+            className="bg-brand-600 text-white text-sm font-medium px-4 py-2 rounded-xl hover:bg-brand-700 transition-all shadow-sm hover:shadow-md"
+          >
+            Filtrar
+          </button>
+          {hasFilters && (
+            <Link
+              href="/contracts"
+              className="text-gray-500 text-sm font-medium px-4 py-2 rounded-xl bg-white border border-surface-200 hover:bg-surface-50 transition-all shadow-card"
+            >
+              Limpar
+            </Link>
+          )}
+        </div>
+      </form>
 
-      {/* Dados da API */}
-      <div className="bg-white border border-surface-200 rounded-xl p-6 shadow-card">
-        <h2 className="font-semibold text-gray-900 mb-4">Campos disponíveis da API</h2>
-        <p className="text-sm text-gray-500 mb-4">
-          O endpoint <code className="text-xs bg-surface-100 px-1.5 py-0.5 rounded">GetInfoContrato</code> retorna
-          dados muito mais ricos que o endpoint de anúncios. Estes são os campos principais:
-        </p>
+      {/* Table */}
+      <div className="bg-white border border-surface-200 rounded-xl overflow-hidden shadow-card">
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-surface-200">
-                <th className="text-left py-2 pr-4 text-xs font-medium text-gray-400 uppercase">Campo API</th>
-                <th className="text-left py-2 pr-4 text-xs font-medium text-gray-400 uppercase">Coluna BD</th>
-                <th className="text-left py-2 text-xs font-medium text-gray-400 uppercase">Descrição</th>
+            <thead className="bg-surface-50 border-b border-surface-200">
+              <tr>
+                <th className="text-left px-4 py-3 font-medium text-gray-400 text-xs uppercase tracking-wider">
+                  Objecto
+                </th>
+                <th className="text-left px-4 py-3 font-medium text-gray-400 text-xs uppercase tracking-wider">
+                  Entidade
+                </th>
+                <th className="text-left px-4 py-3 font-medium text-gray-400 text-xs uppercase tracking-wider">
+                  Vencedor
+                </th>
+                <th className="text-left px-4 py-3 font-medium text-gray-400 text-xs uppercase tracking-wider">
+                  Celebração
+                </th>
+                <th className="text-left px-4 py-3 font-medium text-gray-400 text-xs uppercase tracking-wider">
+                  CPV
+                </th>
+                <th className="text-right px-4 py-3 font-medium text-gray-400 text-xs uppercase tracking-wider">
+                  Valor
+                </th>
+                <th className="text-center px-4 py-3 font-medium text-gray-400 text-xs uppercase tracking-wider">
+                  Estado
+                </th>
               </tr>
             </thead>
             <tbody className="divide-y divide-surface-100">
-              <tr><td className="py-2 pr-4 font-mono text-xs text-brand-600">idContrato</td><td className="py-2 pr-4 font-mono text-xs">base_contract_id</td><td className="py-2 text-gray-500">Identificador único do contrato</td></tr>
-              <tr><td className="py-2 pr-4 font-mono text-xs text-brand-600">objectoContrato</td><td className="py-2 pr-4 font-mono text-xs">object</td><td className="py-2 text-gray-500">Objecto do contrato (título)</td></tr>
-              <tr><td className="py-2 pr-4 font-mono text-xs text-brand-600">adjudicante[]</td><td className="py-2 pr-4 font-mono text-xs">contracting_entities</td><td className="py-2 text-gray-500">Entidades adjudicantes (formato &quot;NIF - Nome&quot;)</td></tr>
-              <tr><td className="py-2 pr-4 font-mono text-xs text-brand-600">adjudicatarios[]</td><td className="py-2 pr-4 font-mono text-xs">winners</td><td className="py-2 text-gray-500">Empresas vencedoras (formato &quot;NIF - Nome&quot;)</td></tr>
-              <tr><td className="py-2 pr-4 font-mono text-xs text-brand-600">concorrentes</td><td className="py-2 pr-4 font-mono text-xs">competitors</td><td className="py-2 text-gray-500">Outras empresas que participaram no concurso</td></tr>
-              <tr><td className="py-2 pr-4 font-mono text-xs text-brand-600">precoContratual</td><td className="py-2 pr-4 font-mono text-xs">contract_price</td><td className="py-2 text-gray-500">Valor final do contrato (o que se paga)</td></tr>
-              <tr><td className="py-2 pr-4 font-mono text-xs text-brand-600">precoBaseProcedimento</td><td className="py-2 pr-4 font-mono text-xs">base_price</td><td className="py-2 text-gray-500">Preço base estimado no procedimento</td></tr>
-              <tr><td className="py-2 pr-4 font-mono text-xs text-brand-600">PrecoTotalEfetivo</td><td className="py-2 pr-4 font-mono text-xs">effective_price</td><td className="py-2 text-gray-500">Preço total efetivo (incluindo aditamentos)</td></tr>
-              <tr><td className="py-2 pr-4 font-mono text-xs text-brand-600">dataDecisaoAdjudicacao</td><td className="py-2 pr-4 font-mono text-xs">award_date</td><td className="py-2 text-gray-500">Data em que foi decidido quem ganhou</td></tr>
-              <tr><td className="py-2 pr-4 font-mono text-xs text-brand-600">dataCelebracaoContrato</td><td className="py-2 pr-4 font-mono text-xs">signing_date</td><td className="py-2 text-gray-500">Data de assinatura do contrato</td></tr>
-              <tr><td className="py-2 pr-4 font-mono text-xs text-brand-600">localExecucao[]</td><td className="py-2 pr-4 font-mono text-xs">execution_locations</td><td className="py-2 text-gray-500">Locais de execução (&quot;País, Distrito, Concelho&quot;)</td></tr>
-              <tr><td className="py-2 pr-4 font-mono text-xs text-brand-600">cpv[]</td><td className="py-2 pr-4 font-mono text-xs">cpv_list</td><td className="py-2 text-gray-500">Códigos CPV do contrato</td></tr>
-              <tr><td className="py-2 pr-4 font-mono text-xs text-brand-600">tipoprocedimento</td><td className="py-2 pr-4 font-mono text-xs">procedure_type</td><td className="py-2 text-gray-500">Concurso Público, Ajuste Directo, etc.</td></tr>
-              <tr><td className="py-2 pr-4 font-mono text-xs text-brand-600">prazoExecucao</td><td className="py-2 pr-4 font-mono text-xs">execution_deadline_days</td><td className="py-2 text-gray-500">Prazo de execução em dias</td></tr>
+              {contracts.map((c) => {
+                const entityName = Array.isArray(c.contracting_entities) && c.contracting_entities.length > 0
+                  ? extractName(c.contracting_entities[0])
+                  : "\u2014";
+                const winnerName = Array.isArray(c.winners) && c.winners.length > 0
+                  ? extractName(c.winners[0])
+                  : "\u2014";
+
+                return (
+                  <tr key={c.id} className="hover:bg-surface-50 transition-colors">
+                    <td className="px-4 py-3 max-w-xs">
+                      <Link
+                        href={`/contracts/${c.id}`}
+                        className="text-brand-600 hover:underline font-medium line-clamp-2"
+                      >
+                        {c.object || "Sem objecto"}
+                      </Link>
+                      {c.procedure_type && (
+                        <p className="text-xs text-gray-400 mt-0.5 truncate">{c.procedure_type}</p>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-gray-600 max-w-[180px] truncate text-xs">
+                      {entityName}
+                    </td>
+                    <td className="px-4 py-3 text-gray-600 max-w-[180px] truncate text-xs">
+                      {winnerName}
+                    </td>
+                    <td className="px-4 py-3 text-gray-600 whitespace-nowrap text-xs tabular-nums">
+                      {formatDate(c.signing_date)}
+                    </td>
+                    <td className="px-4 py-3">
+                      {c.cpv_main ? (
+                        <span className="inline-block bg-blue-50 text-blue-700 text-xs px-2 py-0.5 rounded font-mono whitespace-nowrap">
+                          {c.cpv_main}
+                        </span>
+                      ) : (
+                        "\u2014"
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-right whitespace-nowrap">
+                      <span className="text-gray-900 font-medium text-xs">
+                        {formatEur(c.contract_price)}
+                      </span>
+                      {discountBadge(c.base_price, c.contract_price) && (
+                        <span className="ml-1.5">
+                          {discountBadge(c.base_price, c.contract_price)}
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-center">
+                      <span
+                        className={`inline-block text-xs px-2 py-0.5 rounded-full font-medium ${STATUS_BADGE[c.status] ?? "bg-gray-100 text-gray-600"}`}
+                      >
+                        {STATUS_LABEL[c.status] ?? c.status}
+                      </span>
+                    </td>
+                  </tr>
+                );
+              })}
+              {contracts.length === 0 && (
+                <tr>
+                  <td
+                    colSpan={7}
+                    className="px-4 py-12 text-center text-gray-400"
+                  >
+                    {hasFilters
+                      ? "Nenhum contrato encontrado com estes filtros"
+                      : "Nenhum contrato na base de dados. Execute a ingest\u00E3o de contratos no Dashboard."}
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
       </div>
 
-      {/* Roadmap */}
-      <div className="space-y-4">
-        <h2 className="text-lg font-semibold text-gray-900">Roadmap de implementação</h2>
+      {/* Pagination */}
+      {totalPages > 1 && (() => {
+        const qs = (p: number) => buildQs({ page: p });
+        const BTN = "px-3 py-1.5 text-sm font-medium bg-white border border-surface-200 rounded-xl hover:bg-surface-50 transition-all shadow-card";
+        const ACTIVE = "px-3 py-1.5 text-sm font-medium rounded-xl bg-brand-600 text-white shadow-sm";
+        const DOTS = "px-2 py-1.5 text-sm text-gray-300";
 
-        <PhaseCard phase={1} title="Ingestão de contratos" status="planned">
-          <p>
-            Criar a Edge Function <code className="text-xs bg-surface-100 px-1.5 py-0.5 rounded">ingest-contracts</code> que
-            consome o endpoint <code className="text-xs bg-surface-100 px-1.5 py-0.5 rounded">GetInfoContrato?Ano=YYYY</code> da API BASE.
-          </p>
-          <ul className="list-disc list-inside space-y-1 text-xs text-gray-400 mt-2">
-            <li>Fetch por ano, filtrar por intervalo de datas</li>
-            <li>Mapear todos os campos da API para a tabela <code className="bg-surface-100 px-1 rounded">contracts</code></li>
-            <li>Deduplicação via SHA-256 hash (mesmo padrão dos anúncios)</li>
-            <li>Ligar automaticamente ao anúncio existente via <code className="bg-surface-100 px-1 rounded">nAnuncio</code></li>
-            <li>Extrair NIF da entidade e da empresa vencedora do formato &quot;NIF - Nome&quot;</li>
-            <li>Batch insert/update com estatísticas de execução</li>
-          </ul>
-        </PhaseCard>
+        const pages: (number | "dots")[] = [];
+        const add = (n: number) => { if (!pages.includes(n)) pages.push(n); };
 
-        <PhaseCard phase={2} title="Tabela de contratos com filtros" status="planned">
-          <p>
-            Construir a interface de listagem de contratos, seguindo o padrão da página de Anúncios.
-          </p>
-          <ul className="list-disc list-inside space-y-1 text-xs text-gray-400 mt-2">
-            <li>Tabela paginada com colunas: Objecto, Entidade, Vencedor, Preço Base, Preço Contratual, Data, CPV</li>
-            <li>Badge de &quot;desconto&quot; mostrando a diferença percentual entre preço base e contratual</li>
-            <li>Filtros: por CPV, entidade, empresa vencedora, intervalo de valor, tipo de procedimento, ano</li>
-            <li>Links para: detalhe do contrato, perfil da entidade, perfil da empresa</li>
-          </ul>
-        </PhaseCard>
+        add(1);
+        if (page > 3) pages.push("dots");
+        for (let i = Math.max(2, page - 1); i <= Math.min(totalPages - 1, page + 1); i++) add(i);
+        if (page < totalPages - 2) pages.push("dots");
+        if (totalPages > 1) add(totalPages);
 
-        <PhaseCard phase={3} title="Detalhe do contrato" status="planned">
-          <p>
-            Página de detalhe individual de cada contrato, com toda a informação disponível.
-          </p>
-          <ul className="list-disc list-inside space-y-1 text-xs text-gray-400 mt-2">
-            <li>Header: objecto, entidade, empresa vencedora, valores</li>
-            <li>Timeline visual: publicação → adjudicação → celebração → fecho</li>
-            <li>Card de participantes: entidades adjudicantes + empresas vencedoras + concorrentes</li>
-            <li>Card de execução: prazo, localização, regime jurídico</li>
-            <li>Link para o anúncio original (se existir no sistema)</li>
-            <li>Histórico de modificações contratuais (aditamentos)</li>
-          </ul>
-        </PhaseCard>
-
-        <PhaseCard phase={4} title="Modificações contratuais" status="planned">
-          <p>
-            Edge Function <code className="text-xs bg-surface-100 px-1.5 py-0.5 rounded">ingest-contract-mods</code> para
-            acompanhar aditamentos e alterações a contratos.
-          </p>
-          <ul className="list-disc list-inside space-y-1 text-xs text-gray-400 mt-2">
-            <li>Consumir <code className="bg-surface-100 px-1 rounded">GetInfoModContrat</code></li>
-            <li>Calcular deltas de preço por modificação</li>
-            <li>Mostrar timeline de modificações no detalhe do contrato</li>
-            <li>Alertar quando um contrato sofre alterações significativas (&gt;20% do valor)</li>
-          </ul>
-        </PhaseCard>
-      </div>
-
-      {/* Empty state */}
-      {totalContracts === 0 && (
-        <div className="bg-surface-50 border border-dashed border-surface-200 rounded-xl p-8 text-center">
-          <FileSignature className="w-10 h-10 text-gray-300 mx-auto mb-3" />
-          <p className="text-gray-400 text-sm">
-            Ainda não existem contratos na base de dados.
-          </p>
-          <p className="text-gray-300 text-xs mt-1">
-            A Edge Function <code className="bg-surface-100 px-1.5 py-0.5 rounded">ingest-contracts</code> será implementada na Fase 1.
-          </p>
-        </div>
-      )}
+        return (
+          <div className="flex justify-center items-center gap-1 flex-wrap">
+            {page > 1 && (
+              <Link href={qs(page - 1)} className={BTN}>&larr; Anterior</Link>
+            )}
+            {pages.map((p, i) =>
+              p === "dots" ? (
+                <span key={`dots-${i}`} className={DOTS}>...</span>
+              ) : (
+                <Link key={p} href={qs(p)} className={p === page ? ACTIVE : BTN}>
+                  {p}
+                </Link>
+              ),
+            )}
+            {page < totalPages && (
+              <Link href={qs(page + 1)} className={BTN}>Pr&oacute;xima &rarr;</Link>
+            )}
+          </div>
+        );
+      })()}
     </div>
   );
 }

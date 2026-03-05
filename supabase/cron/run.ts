@@ -12,8 +12,9 @@
  *   SUPABASE_SERVICE_ROLE_KEY
  *
  * Schedule:
- *   - ingest-base + match-and-queue : every 2 hours
- *   - send-emails                   : every 10 minutes
+ *   - ingest-base + ingest-contracts + extract-entities + extract-companies + match-and-queue : every 2 hours
+ *   - send-emails                                      : every 10 minutes
+ *   - ingest-contract-mods                             : daily at 04:00
  */
 
 import { config as loadDotenv } from "dotenv";
@@ -85,7 +86,14 @@ async function callFunction(
 
 async function runIngestPipeline(): Promise<void> {
   await callFunction("ingest-base");
+  await callFunction("ingest-contracts");
+  await callFunction("extract-entities");
+  await callFunction("extract-companies");
   await callFunction("match-and-queue");
+}
+
+async function runContractModsPipeline(): Promise<void> {
+  await callFunction("ingest-contract-mods");
 }
 
 async function runSendEmails(): Promise<void> {
@@ -102,6 +110,7 @@ if (isOnce) {
   console.log("[cron] Running pipeline once …");
   try {
     await runIngestPipeline();
+    await runContractModsPipeline();
     await runSendEmails();
     console.log("[cron] Done.");
   } catch (err) {
@@ -124,8 +133,15 @@ if (isOnce) {
     runSendEmails().catch(console.error);
   });
 
+  // Daily at 04:00 – contract modifications
+  cron.schedule("0 4 * * *", () => {
+    console.log(`\n[cron] ${new Date().toISOString()} – contract modifications`);
+    runContractModsPipeline().catch(console.error);
+  });
+
   console.log("[cron] Scheduled:");
-  console.log("  ingest-base + match-and-queue → every 2 hours (at :00)");
-  console.log("  send-emails                   → every 10 minutes");
+  console.log("  ingest-base + ingest-contracts + extract-entities + extract-companies + match-and-queue → every 2 hours (at :00)");
+  console.log("  send-emails                                      → every 10 minutes");
+  console.log("  ingest-contract-mods                             → daily at 04:00");
   console.log("[cron] Press Ctrl+C to stop.\n");
 }

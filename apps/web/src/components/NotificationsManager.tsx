@@ -93,7 +93,7 @@ export default function NotificationsManager({
                   Cliente
                 </th>
                 <th className="text-left px-4 py-3 font-medium text-gray-400 text-xs uppercase tracking-wider">
-                  Anuncio
+                  Anúncio
                 </th>
                 <th className="text-center px-4 py-3 font-medium text-gray-400 text-xs uppercase tracking-wider">
                   Estado
@@ -171,7 +171,7 @@ export default function NotificationsManager({
                     colSpan={6}
                     className="px-4 py-12 text-center text-gray-400"
                   >
-                    Nenhuma notificacao encontrada
+                    Nenhuma notificação encontrada
                   </td>
                 </tr>
               )}
@@ -199,7 +199,7 @@ export default function NotificationsManager({
               href={`/notifications?status=${statusFilter}&page=${page + 1}`}
               className="px-3.5 py-1.5 text-sm font-medium bg-white border border-surface-200 rounded-xl hover:bg-surface-50 shadow-card transition-all"
             >
-              Proxima
+              Próxima
             </Link>
           )}
         </div>

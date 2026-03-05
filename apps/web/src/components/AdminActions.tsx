@@ -65,8 +65,14 @@ export default function AdminActions({
         body: JSON.stringify(body),
       });
 
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+      const text = await res.text();
+      let data: unknown;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        data = { raw: text.slice(0, 500) };
+      }
+      if (!res.ok) throw new Error((data as Record<string, string>)?.error ?? `HTTP ${res.status}`);
 
       setResults((prev) => [{ fn, data }, ...prev.slice(0, 4)]);
 
@@ -84,7 +90,7 @@ export default function AdminActions({
       {isInitialised && (
         <div className="bg-surface-50 border border-surface-200 rounded-xl p-4 space-y-3">
           <p className="text-xs font-medium text-gray-400 uppercase tracking-wider">
-            Intervalo de ingestao
+            Intervalo de ingestão
           </p>
           <div className="flex flex-wrap items-end gap-3">
             <div>
@@ -122,10 +128,11 @@ export default function AdminActions({
         )}
 
         {actions.map(({ fn, label, variant, body }) => {
-          const effectiveBody =
-            fn === "ingest-base"
-              ? { ...body, from_date: fromDate, to_date: toDate }
-              : body ?? {};
+          const needsDates =
+            fn === "ingest-base" || fn === "ingest-contracts" || fn === "match-and-queue";
+          const effectiveBody = needsDates
+            ? { ...body, from_date: fromDate, to_date: toDate }
+            : body ?? {};
 
           return (
             <button
@@ -146,12 +153,23 @@ export default function AdminActions({
         </div>
       )}
 
+      {/* Progress indicator */}
+      {loading && (
+        <div className="flex items-center gap-3 bg-blue-50 border border-blue-200 text-blue-700 rounded-xl px-4 py-3 text-sm">
+          <svg className="animate-spin h-4 w-4 flex-shrink-0" viewBox="0 0 24 24" fill="none">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+          </svg>
+          <span>A executar <strong>{loading}</strong>... isto pode demorar alguns minutos.</span>
+        </div>
+      )}
+
       {results.map(({ fn, data }, i) => (
         <div
           key={i}
-          className="text-xs bg-brand-50 border border-brand-200 text-brand-800 rounded-xl px-4 py-3 font-mono"
+          className="text-xs bg-brand-50 border border-brand-200 text-brand-800 rounded-xl px-4 py-3 font-mono overflow-auto max-h-40 break-all"
         >
-          <strong>{fn}:</strong> {JSON.stringify(data)}
+          <strong>{fn}:</strong> {JSON.stringify(data, null, 2)}
         </div>
       ))}
     </div>

@@ -110,15 +110,42 @@ export default async function SettingsPage() {
             actions={[
               {
                 fn: "ingest-base",
-                label: "Ingerir BASE API",
+                label: "Ingerir Anúncios",
+                variant: "primary",
+                body: { dry_run: false },
+              },
+              {
+                fn: "ingest-contracts",
+                label: "Ingerir Contratos",
                 variant: "primary",
                 body: { dry_run: false },
               },
               {
                 fn: "ingest-base",
-                label: "Dry Run (sem guardar)",
+                label: "Dry Run Anúncios",
                 variant: "secondary",
                 body: { dry_run: true },
+              },
+              {
+                fn: "ingest-contracts",
+                label: "Dry Run Contratos",
+                variant: "secondary",
+                body: { dry_run: true },
+              },
+              {
+                fn: "ingest-contract-mods",
+                label: "Ingerir Modificações",
+                variant: "secondary",
+              },
+              {
+                fn: "extract-entities",
+                label: "Extrair Entidades",
+                variant: "primary",
+              },
+              {
+                fn: "extract-companies",
+                label: "Extrair Empresas",
+                variant: "primary",
               },
               {
                 fn: "match-and-queue",

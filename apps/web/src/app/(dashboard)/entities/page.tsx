@@ -1,274 +1,289 @@
 import { createClient } from "@/lib/supabase/server";
-import { Building2, MapPin, BarChart3, Target, History, Award, PieChart, Search } from "lucide-react";
+import Link from "next/link";
+import { Building2 } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
-function PhaseCard({
-  phase,
-  title,
-  status,
-  children,
+const PAGE_SIZE = 20;
+
+const TYPE_BADGE: Record<string, string> = {
+  "município": "bg-blue-50 text-blue-700",
+  "freguesia": "bg-blue-50 text-blue-600",
+  "ministério": "bg-purple-50 text-purple-700",
+  "instituto": "bg-indigo-50 text-indigo-700",
+  "saúde": "bg-red-50 text-red-700",
+  "ensino": "bg-amber-50 text-amber-700",
+  "empresa_publica": "bg-green-50 text-green-700",
+  "autoridade": "bg-orange-50 text-orange-700",
+  "defesa": "bg-gray-100 text-gray-700",
+};
+
+const TYPE_LABEL: Record<string, string> = {
+  "município": "Município",
+  "freguesia": "Freguesia",
+  "ministério": "Ministério",
+  "instituto": "Instituto",
+  "saúde": "Saúde",
+  "ensino": "Ensino",
+  "empresa_publica": "Empresa Pública",
+  "autoridade": "Autoridade",
+  "defesa": "Defesa",
+};
+
+function formatEur(val: number | null): string {
+  if (val == null || val === 0) return "\u2014";
+  if (val >= 1_000_000) {
+    return `${(val / 1_000_000).toLocaleString("pt-PT", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}M \u20AC`;
+  }
+  if (val >= 1_000) {
+    return `${(val / 1_000).toLocaleString("pt-PT", { minimumFractionDigits: 0, maximumFractionDigits: 0 })}k \u20AC`;
+  }
+  return `${val.toLocaleString("pt-PT", { minimumFractionDigits: 0, maximumFractionDigits: 0 })} \u20AC`;
+}
+
+export default async function EntitiesPage({
+  searchParams,
 }: {
-  phase: number;
-  title: string;
-  status: "planned" | "in_progress" | "done";
-  children: React.ReactNode;
+  searchParams: Promise<{
+    page?: string;
+    name?: string;
+    type?: string;
+    location?: string;
+    sort?: string;
+  }>;
 }) {
-  const statusStyles = {
-    planned: "bg-surface-50 border-surface-200 text-gray-400",
-    in_progress: "bg-amber-50/60 border-amber-200/60 text-amber-700",
-    done: "bg-brand-50/60 border-brand-200/60 text-brand-700",
-  };
-  const statusLabels = {
-    planned: "Planeado",
-    in_progress: "Em progresso",
-    done: "Concluído",
-  };
+  const params = await searchParams;
+  const page = Math.max(1, parseInt(params.page ?? "1"));
+  const nameFilter = params.name ?? "";
+  const typeFilter = params.type ?? "";
+  const locationFilter = params.location ?? "";
+  const sortField = params.sort ?? "total_value";
 
-  return (
-    <div className="bg-white border border-surface-200 rounded-xl p-6 shadow-card">
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-3">
-          <span className="flex items-center justify-center w-8 h-8 rounded-lg bg-brand-50 text-brand-700 text-sm font-bold">
-            {phase}
-          </span>
-          <h3 className="font-semibold text-gray-900">{title}</h3>
-        </div>
-        <span className={`text-xs font-medium px-2.5 py-1 rounded-full border ${statusStyles[status]}`}>
-          {statusLabels[status]}
-        </span>
-      </div>
-      <div className="text-sm text-gray-500 space-y-3">{children}</div>
-    </div>
-  );
-}
-
-function FeatureItem({ icon: Icon, title, description }: { icon: React.ElementType; title: string; description: string }) {
-  return (
-    <div className="flex gap-3">
-      <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-surface-50 shrink-0 mt-0.5">
-        <Icon className="w-4 h-4 text-gray-400" />
-      </div>
-      <div>
-        <p className="text-sm font-medium text-gray-700">{title}</p>
-        <p className="text-xs text-gray-400 mt-0.5">{description}</p>
-      </div>
-    </div>
-  );
-}
-
-export default async function EntitiesPage() {
   const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
   const { data: appUser } = await supabase
     .from("app_users")
-    .select("tenant_id, role")
-    .eq("id", user!.id)
+    .select("tenant_id")
     .maybeSingle();
 
-  const tenantId = appUser?.tenant_id;
+  const from = (page - 1) * PAGE_SIZE;
+  const to = from + PAGE_SIZE - 1;
 
-  let totalEntities = 0;
-  if (tenantId) {
-    const { count } = await supabase
-      .from("entities")
-      .select("*", { count: "exact", head: true })
-      .eq("tenant_id", tenantId);
-    totalEntities = count ?? 0;
+  // Determine sort column and direction
+  const sortOptions: Record<string, { column: string; ascending: boolean }> = {
+    total_value: { column: "total_value", ascending: false },
+    total_contracts: { column: "total_contracts", ascending: false },
+    total_announcements: { column: "total_announcements", ascending: false },
+    name: { column: "name", ascending: true },
+  };
+  const sort = sortOptions[sortField] ?? sortOptions.total_value;
+
+  let q = supabase
+    .from("entities")
+    .select(
+      "id, nif, name, entity_type, location, total_announcements, total_contracts, total_value, avg_contract_value",
+      { count: "exact" },
+    )
+    .order(sort.column, { ascending: sort.ascending })
+    .range(from, to);
+
+  if (appUser?.tenant_id) q = q.eq("tenant_id", appUser.tenant_id);
+  if (nameFilter) q = q.ilike("name", `%${nameFilter}%`);
+  if (typeFilter) q = q.eq("entity_type", typeFilter);
+  if (locationFilter) q = q.ilike("location", `%${locationFilter}%`);
+
+  const { data: entities, count } = await q;
+  const totalPages = Math.ceil((count ?? 0) / PAGE_SIZE);
+
+  function buildQs(overrides: Record<string, string | number> = {}) {
+    const base: Record<string, string> = {
+      page: String(page),
+      name: nameFilter,
+      type: typeFilter,
+      location: locationFilter,
+      sort: sortField,
+    };
+    const merged = { ...base, ...Object.fromEntries(Object.entries(overrides).map(([k, v]) => [k, String(v)])) };
+    const parts = Object.entries(merged).filter(([, v]) => v).map(([k, v]) => `${k}=${encodeURIComponent(v)}`);
+    return `/entities?${parts.join("&")}`;
   }
 
+  const hasFilters = nameFilter || typeFilter || locationFilter;
+
   return (
-    <div className="space-y-8">
-      {/* Header */}
+    <div className="space-y-5">
       <div>
-        <div className="flex items-center gap-3 mb-1">
-          <Building2 className="w-6 h-6 text-brand-600" />
+        <div className="flex items-center gap-3 mb-0.5">
+          <Building2 className="w-5 h-5 text-brand-600" />
           <h1 className="text-2xl font-bold text-gray-900">Entidades Públicas</h1>
         </div>
-        <p className="text-gray-400 text-sm">
-          Perfil completo de todas as entidades adjudicantes -- municípios, ministérios, institutos,
-          hospitais e empresas públicas que contratam no portal BASE
+        <p className="text-gray-500 text-sm">
+          {count ?? 0} entidades adjudicantes
         </p>
-        {totalEntities > 0 && (
-          <p className="text-sm text-brand-600 font-medium mt-2">
-            {totalEntities.toLocaleString("pt-PT")} entidades na base de dados
-          </p>
-        )}
       </div>
 
-      {/* O que esta página vai mostrar */}
-      <div className="bg-white border border-surface-200 rounded-xl p-6 shadow-card">
-        <h2 className="font-semibold text-gray-900 mb-4">O que vais encontrar aqui</h2>
-        <p className="text-sm text-gray-500 mb-5">
-          Cada entidade pública que publica anúncios ou celebra contratos ganha um perfil
-          completo. A grande pergunta que esta página responde é:
-          <strong className="text-gray-700"> &quot;Onde devo concorrer?&quot;</strong>
-        </p>
-        <div className="grid gap-4 md:grid-cols-2">
-          <FeatureItem
-            icon={BarChart3}
-            title="Volume de Contratação"
-            description="Total de anúncios publicados, contratos celebrados, e valor anual contratado por cada entidade. Ranking das entidades que mais compram."
+      {/* Filters */}
+      <form className="bg-white border border-surface-200 rounded-xl p-4 shadow-card space-y-3">
+        <div className="flex flex-wrap gap-3">
+          <input
+            name="name"
+            defaultValue={nameFilter}
+            placeholder="Nome ou NIF..."
+            className="border border-surface-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500 transition-all w-52"
           />
-          <FeatureItem
-            icon={PieChart}
-            title="CPVs Mais Frequentes"
-            description="Para cada entidade, quais os sectores CPV em que mais contrata. Permite perceber se uma câmara investe mais em obras, TI, ou consultoria."
+          <select
+            name="type"
+            defaultValue={typeFilter}
+            className="border border-surface-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500 transition-all bg-white"
+          >
+            <option value="">Todos os tipos</option>
+            {Object.entries(TYPE_LABEL).map(([key, label]) => (
+              <option key={key} value={key}>{label}</option>
+            ))}
+          </select>
+          <input
+            name="location"
+            defaultValue={locationFilter}
+            placeholder="Localização..."
+            className="border border-surface-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500 transition-all w-44"
           />
-          <FeatureItem
-            icon={Award}
-            title="Empresas Favoritas"
-            description="Top empresas adjudicatárias por entidade -- com quem costuma contratar. Revela padrões de adjudicação e possíveis parceiros a vigiar."
-          />
-          <FeatureItem
-            icon={MapPin}
-            title="Localização e Tipo"
-            description="Classificação por tipo (município, ministério, hospital, etc.) e localização geográfica. Permite filtrar por região e sector público."
-          />
-          <FeatureItem
-            icon={History}
-            title="Histórico de Actividade"
-            description="Timeline de anúncios e contratos publicados ao longo do tempo. Detecta sazonalidade (ex: municípios contratam mais no Q4)."
-          />
-          <FeatureItem
-            icon={Target}
-            title="Radar de Oportunidades"
-            description="Cruzamento automático: 'esta entidade costuma comprar CPVs na tua área, e publicou X concursos no último ano'. Funcionalidade premium."
-          />
-          <FeatureItem
-            icon={Search}
-            title="Pesquisa e Filtros"
-            description="Pesquisar por nome, NIF, tipo de entidade, região, volume mínimo de contratação, ou CPVs contratados."
-          />
+          <select
+            name="sort"
+            defaultValue={sortField}
+            className="border border-surface-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500 transition-all bg-white"
+          >
+            <option value="total_value">Maior valor</option>
+            <option value="total_contracts">Mais contratos</option>
+            <option value="total_announcements">Mais anúncios</option>
+            <option value="name">Nome (A-Z)</option>
+          </select>
+          <button
+            type="submit"
+            className="bg-brand-600 text-white text-sm font-medium px-4 py-2 rounded-xl hover:bg-brand-700 transition-all shadow-sm hover:shadow-md"
+          >
+            Filtrar
+          </button>
+          {hasFilters && (
+            <Link
+              href="/entities"
+              className="text-gray-500 text-sm font-medium px-4 py-2 rounded-xl bg-white border border-surface-200 hover:bg-surface-50 transition-all shadow-card"
+            >
+              Limpar
+            </Link>
+          )}
+        </div>
+      </form>
+
+      {/* Table */}
+      <div className="bg-white border border-surface-200 rounded-xl overflow-hidden shadow-card">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-surface-50 border-b border-surface-200">
+              <tr>
+                <th className="text-left px-4 py-3 font-medium text-gray-400 text-xs uppercase tracking-wider">
+                  Entidade
+                </th>
+                <th className="text-left px-4 py-3 font-medium text-gray-400 text-xs uppercase tracking-wider">
+                  Tipo
+                </th>
+                <th className="text-left px-4 py-3 font-medium text-gray-400 text-xs uppercase tracking-wider">
+                  Localização
+                </th>
+                <th className="text-right px-4 py-3 font-medium text-gray-400 text-xs uppercase tracking-wider">
+                  Anúncios
+                </th>
+                <th className="text-right px-4 py-3 font-medium text-gray-400 text-xs uppercase tracking-wider">
+                  Contratos
+                </th>
+                <th className="text-right px-4 py-3 font-medium text-gray-400 text-xs uppercase tracking-wider">
+                  Valor Total
+                </th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-surface-100">
+              {(entities ?? []).map((ent) => (
+                <tr key={ent.id} className="hover:bg-surface-50 transition-colors">
+                  <td className="px-4 py-3 max-w-xs">
+                    <Link
+                      href={`/entities/${ent.id}`}
+                      className="text-brand-600 hover:underline font-medium line-clamp-2"
+                    >
+                      {ent.name}
+                    </Link>
+                    <p className="text-xs text-gray-400 font-mono mt-0.5">{ent.nif}</p>
+                  </td>
+                  <td className="px-4 py-3">
+                    {ent.entity_type ? (
+                      <span className={`inline-block text-xs px-2 py-0.5 rounded-full font-medium ${TYPE_BADGE[ent.entity_type] ?? "bg-gray-100 text-gray-600"}`}>
+                        {TYPE_LABEL[ent.entity_type] ?? ent.entity_type}
+                      </span>
+                    ) : (
+                      <span className="text-gray-300 text-xs">&mdash;</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-3 text-gray-600 text-xs max-w-[160px] truncate">
+                    {ent.location ?? "\u2014"}
+                  </td>
+                  <td className="px-4 py-3 text-right text-gray-700 font-medium tabular-nums">
+                    {ent.total_announcements > 0 ? ent.total_announcements : "\u2014"}
+                  </td>
+                  <td className="px-4 py-3 text-right text-gray-700 font-medium tabular-nums">
+                    {ent.total_contracts > 0 ? ent.total_contracts : "\u2014"}
+                  </td>
+                  <td className="px-4 py-3 text-right text-gray-900 font-medium whitespace-nowrap">
+                    {formatEur(ent.total_value)}
+                  </td>
+                </tr>
+              ))}
+              {(entities ?? []).length === 0 && (
+                <tr>
+                  <td colSpan={6} className="px-4 py-12 text-center text-gray-400">
+                    {hasFilters
+                      ? "Nenhuma entidade encontrada com estes filtros"
+                      : "Nenhuma entidade na base de dados. Execute \"Extrair Entidades\" nas Definições."}
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
         </div>
       </div>
 
-      {/* Fontes de dados */}
-      <div className="bg-white border border-surface-200 rounded-xl p-6 shadow-card">
-        <h2 className="font-semibold text-gray-900 mb-4">Fontes de dados</h2>
-        <div className="space-y-3 text-sm text-gray-500">
-          <div className="flex items-start gap-3">
-            <span className="flex items-center justify-center w-6 h-6 rounded bg-blue-50 text-blue-600 text-xs font-bold shrink-0 mt-0.5">1</span>
-            <div>
-              <p className="font-medium text-gray-700">Anúncios existentes</p>
-              <p className="text-xs text-gray-400 mt-0.5">
-                Campos <code className="bg-surface-100 px-1 rounded">entity_nif</code> e <code className="bg-surface-100 px-1 rounded">entity_name</code>
-                de cada anúncio já ingerido. Fonte primária e mais rápida.
-              </p>
-            </div>
+      {/* Pagination */}
+      {totalPages > 1 && (() => {
+        const qs = (p: number) => buildQs({ page: p });
+        const BTN = "px-3 py-1.5 text-sm font-medium bg-white border border-surface-200 rounded-xl hover:bg-surface-50 transition-all shadow-card";
+        const ACTIVE = "px-3 py-1.5 text-sm font-medium rounded-xl bg-brand-600 text-white shadow-sm";
+        const DOTS = "px-2 py-1.5 text-sm text-gray-300";
+
+        const pages: (number | "dots")[] = [];
+        const add = (n: number) => { if (!pages.includes(n)) pages.push(n); };
+
+        add(1);
+        if (page > 3) pages.push("dots");
+        for (let i = Math.max(2, page - 1); i <= Math.min(totalPages - 1, page + 1); i++) add(i);
+        if (page < totalPages - 2) pages.push("dots");
+        if (totalPages > 1) add(totalPages);
+
+        return (
+          <div className="flex justify-center items-center gap-1 flex-wrap">
+            {page > 1 && (
+              <Link href={qs(page - 1)} className={BTN}>&larr; Anterior</Link>
+            )}
+            {pages.map((p, i) =>
+              p === "dots" ? (
+                <span key={`dots-${i}`} className={DOTS}>...</span>
+              ) : (
+                <Link key={p} href={qs(p)} className={p === page ? ACTIVE : BTN}>
+                  {p}
+                </Link>
+              ),
+            )}
+            {page < totalPages && (
+              <Link href={qs(page + 1)} className={BTN}>Pr&oacute;xima &rarr;</Link>
+            )}
           </div>
-          <div className="flex items-start gap-3">
-            <span className="flex items-center justify-center w-6 h-6 rounded bg-blue-50 text-blue-600 text-xs font-bold shrink-0 mt-0.5">2</span>
-            <div>
-              <p className="font-medium text-gray-700">Contratos celebrados</p>
-              <p className="text-xs text-gray-400 mt-0.5">
-                Campo <code className="bg-surface-100 px-1 rounded">adjudicante[]</code> dos contratos (formato &quot;NIF - Nome&quot;).
-                Fonte mais rica com localização de execução.
-              </p>
-            </div>
-          </div>
-          <div className="flex items-start gap-3">
-            <span className="flex items-center justify-center w-6 h-6 rounded bg-blue-50 text-blue-600 text-xs font-bold shrink-0 mt-0.5">3</span>
-            <div>
-              <p className="font-medium text-gray-700">API GetInfoEntidades</p>
-              <p className="text-xs text-gray-400 mt-0.5">
-                Endpoint <code className="bg-surface-100 px-1 rounded">GetInfoEntidades?nifEntidade=X</code> para enriquecimento
-                (dados adicionais sobre a entidade). Usado opcionalmente.
-              </p>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Classificação automática */}
-      <div className="bg-white border border-surface-200 rounded-xl p-6 shadow-card">
-        <h2 className="font-semibold text-gray-900 mb-4">Classificação automática de tipo</h2>
-        <p className="text-sm text-gray-500 mb-4">
-          O sistema infere automaticamente o tipo de entidade a partir do nome oficial:
-        </p>
-        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-          {[
-            { label: "Município", pattern: "\"Câmara Municipal\", \"Município\"", color: "bg-blue-50 text-blue-700 border-blue-100" },
-            { label: "Ministério", pattern: "\"Ministério\"", color: "bg-purple-50 text-purple-700 border-purple-100" },
-            { label: "Instituto", pattern: "\"Instituto\"", color: "bg-indigo-50 text-indigo-700 border-indigo-100" },
-            { label: "Saúde", pattern: "\"Hospital\", \"ARS\", \"ACES\"", color: "bg-red-50 text-red-700 border-red-100" },
-            { label: "Ensino", pattern: "\"Universidade\", \"Politécnico\"", color: "bg-amber-50 text-amber-700 border-amber-100" },
-            { label: "Empresa Pública", pattern: "sufixo \"EP\", \"SA\", \"EM\"", color: "bg-green-50 text-green-700 border-green-100" },
-          ].map((type) => (
-            <div key={type.label} className={`rounded-xl border p-3 ${type.color}`}>
-              <p className="text-xs font-semibold">{type.label}</p>
-              <p className="text-[10px] opacity-70 mt-0.5">{type.pattern}</p>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* Roadmap */}
-      <div className="space-y-4">
-        <h2 className="text-lg font-semibold text-gray-900">Roadmap de implementação</h2>
-
-        <PhaseCard phase={1} title="Extração de entidades" status="planned">
-          <p>
-            Edge Function <code className="text-xs bg-surface-100 px-1.5 py-0.5 rounded">extract-entities</code> que
-            percorre anúncios e contratos para extrair NIFs únicos de entidades.
-          </p>
-          <ul className="list-disc list-inside space-y-1 text-xs text-gray-400 mt-2">
-            <li>Scan de announcements.entity_nif + contracts.contracting_entities</li>
-            <li>Upsert na tabela entities com deduplicação por NIF</li>
-            <li>Inferir entity_type a partir do nome</li>
-            <li>Extrair localização mais frequente dos execution_locations</li>
-          </ul>
-        </PhaseCard>
-
-        <PhaseCard phase={2} title="Listagem e perfil de entidade" status="planned">
-          <p>
-            Interface de listagem com cards e página de detalhe individual.
-          </p>
-          <ul className="list-disc list-inside space-y-1 text-xs text-gray-400 mt-2">
-            <li>Tabela/cards com: nome, tipo, localização, total contratos, valor total</li>
-            <li>Filtros por tipo, região, volume, CPVs contratados</li>
-            <li>Página de perfil: KPIs, gráficos de evolução, top CPVs, top empresas</li>
-            <li>Lista de anúncios e contratos da entidade</li>
-          </ul>
-        </PhaseCard>
-
-        <PhaseCard phase={3} title="Estatísticas e rankings" status="planned">
-          <p>
-            Cálculos por <code className="text-xs bg-surface-100 px-1.5 py-0.5 rounded">compute-stats</code> para
-            preencher os campos desnormalizados.
-          </p>
-          <ul className="list-disc list-inside space-y-1 text-xs text-gray-400 mt-2">
-            <li>total_announcements, total_contracts, total_value por entidade</li>
-            <li>top_cpvs: Top 10 CPVs mais contratados [{"{code, count, description}"}]</li>
-            <li>top_companies: Top 10 empresas adjudicadas [{"{nif, name, count, value}"}]</li>
-            <li>Ranking geral de entidades por volume de contratação</li>
-          </ul>
-        </PhaseCard>
-
-        <PhaseCard phase={4} title="Enriquecimento via API" status="planned">
-          <p>
-            Opcionalmente chamar <code className="text-xs bg-surface-100 px-1.5 py-0.5 rounded">GetInfoEntidades</code> para
-            dados adicionais que não estão nos anúncios/contratos.
-          </p>
-        </PhaseCard>
-      </div>
-
-      {/* Empty state */}
-      {totalEntities === 0 && (
-        <div className="bg-surface-50 border border-dashed border-surface-200 rounded-xl p-8 text-center">
-          <Building2 className="w-10 h-10 text-gray-300 mx-auto mb-3" />
-          <p className="text-gray-400 text-sm">
-            Ainda não existem entidades na base de dados.
-          </p>
-          <p className="text-gray-300 text-xs mt-1">
-            A Edge Function <code className="bg-surface-100 px-1.5 py-0.5 rounded">extract-entities</code> será implementada na Fase 2
-            e irá extrair entidades automaticamente dos anúncios e contratos.
-          </p>
-        </div>
-      )}
+        );
+      })()}
     </div>
   );
 }

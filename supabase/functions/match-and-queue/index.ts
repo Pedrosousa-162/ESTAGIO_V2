@@ -7,8 +7,9 @@
  *  {
  *    tenant_id?:       string,  // defaults to first tenant
  *    announcement_id?: string,  // if given, process only this announcement
- *                               // otherwise processes announcements from the last 2 hours
- *    hours_back?:      number   // window for "recent" announcements (default 2)
+ *    from_date?:       string,  // ISO date, e.g. "2024-01-01" – filter by publication_date
+ *    to_date?:         string,  // ISO date, e.g. "2024-01-07" – filter by publication_date
+ *    hours_back?:      number   // fallback window for cron (default 2h, used when no dates/id given)
  *  }
  *
  * Response:
@@ -83,7 +84,16 @@ Deno.serve(async (req) => {
 
     if (body.announcement_id) {
       annQuery = annQuery.eq("id", body.announcement_id);
+    } else if (body.from_date || body.to_date) {
+      // Manual invocation with explicit date range (from frontend)
+      if (body.from_date) {
+        annQuery = annQuery.gte("publication_date", body.from_date);
+      }
+      if (body.to_date) {
+        annQuery = annQuery.lte("publication_date", body.to_date);
+      }
     } else {
+      // Cron / default: only recent announcements
       const hoursBack = Number(body.hours_back ?? 2);
       const since = new Date(Date.now() - hoursBack * 60 * 60 * 1000).toISOString();
       annQuery = annQuery.gte("created_at", since);
