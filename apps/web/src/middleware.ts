@@ -1,7 +1,34 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
+const PUBLIC_PATHS = [
+  "/",
+  "/mercado-publico",
+  "/estatisticas-publico",
+  "/estatisticas-privado",
+  "/oportunidades",
+  "/outros",
+];
+
+// Also allow /mercado-publico/[id] and any sub-paths
+
+function isPublicPath(pathname: string): boolean {
+  return PUBLIC_PATHS.some(
+    (p) => pathname === p || pathname.startsWith(p + "/"),
+  );
+}
+
 export async function middleware(request: NextRequest) {
+  const { pathname } = request.nextUrl;
+
+  // Skip auth check entirely for public pages — no Supabase call needed
+  if (isPublicPath(pathname)) {
+    return NextResponse.next({ request });
+  }
+
+  const isLoginPage = pathname.startsWith("/login");
+  const isAuthCallback = pathname.startsWith("/auth");
+
   let supabaseResponse = NextResponse.next({ request });
 
   const supabase = createServerClient(
@@ -15,12 +42,20 @@ export async function middleware(request: NextRequest) {
         set(name: string, value: string, options: object) {
           request.cookies.set(name, value);
           supabaseResponse = NextResponse.next({ request });
-          supabaseResponse.cookies.set(name, value, options as Parameters<typeof supabaseResponse.cookies.set>[2]);
+          supabaseResponse.cookies.set(
+            name,
+            value,
+            options as Parameters<typeof supabaseResponse.cookies.set>[2],
+          );
         },
         remove(name: string, options: object) {
           request.cookies.set(name, "");
           supabaseResponse = NextResponse.next({ request });
-          supabaseResponse.cookies.set(name, "", options as Parameters<typeof supabaseResponse.cookies.set>[2]);
+          supabaseResponse.cookies.set(
+            name,
+            "",
+            options as Parameters<typeof supabaseResponse.cookies.set>[2],
+          );
         },
       },
     },
@@ -29,10 +64,6 @@ export async function middleware(request: NextRequest) {
   const {
     data: { user },
   } = await supabase.auth.getUser();
-
-  const { pathname } = request.nextUrl;
-  const isLoginPage = pathname.startsWith("/login");
-  const isAuthCallback = pathname.startsWith("/auth");
 
   if (!user && !isLoginPage && !isAuthCallback) {
     const url = request.nextUrl.clone();
